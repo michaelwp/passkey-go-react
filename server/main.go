@@ -13,7 +13,7 @@ import (
 
 const (
 	rpID        = "localhost"
-	frontendURL = "http://localhost:5173"
+	frontendURL = "http://localhost:5174"
 )
 
 type User struct {
@@ -64,7 +64,7 @@ func main() {
 		RPDisplayName: "Passkey Go + React Demo",
 		RPID:          rpID,
 
-		// The browser app runs on port 5173 during development.
+		// The browser app runs on port 5174 during development.
 		RPOrigins: []string{
 			frontendURL,
 		},
@@ -89,8 +89,8 @@ func main() {
 
 	handler := withCORS(mux)
 
-	log.Println("API listening on http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8080", handler))
+	log.Println("API listening on http://localhost:8082")
+	log.Fatal(http.ListenAndServe(":8082", handler))
 }
 
 type userRequest struct {

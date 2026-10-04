@@ -1,15 +1,26 @@
 import { useState } from "react";
 import {
+  browserSupportsWebAuthn,
   startAuthentication,
   startRegistration,
+  WebAuthnError,
+  type PublicKeyCredentialCreationOptionsJSON,
+  type PublicKeyCredentialRequestOptionsJSON,
 } from "@simplewebauthn/browser";
 
-const API = "http://localhost:8080";
+const API = "http://localhost:8082";
 
-async function jsonRequest(path: string, body: unknown) {
+// go-webauthn wraps the options as { publicKey: {...}, mediation?: ... },
+// while SimpleWebAuthn expects the inner publicKey object.
+type CredentialCreation = { publicKey: PublicKeyCredentialCreationOptionsJSON };
+type CredentialAssertion = { publicKey: PublicKeyCredentialRequestOptionsJSON };
+
+type Status = { kind: "info" | "success" | "error"; text: string };
+
+async function jsonRequest<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${API}${path}`, {
     method: "POST",
-    credentials: "include",
+    credentials: "include", // send/receive the WebAuthn session cookie
     headers: {
       "Content-Type": "application/json",
     },
@@ -17,51 +28,123 @@ async function jsonRequest(path: string, body: unknown) {
   });
 
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || "Request failed");
+    const message = (await response.text()).trim();
+    throw new Error(message || `Request failed (${response.status})`);
   }
 
-  return response.json();
+  return response.json() as Promise<T>;
+}
+
+function describeError(error: unknown, fallback: string): string {
+  if (error instanceof WebAuthnError) {
+    switch (error.code) {
+      case "ERROR_AUTHENTICATOR_PREVIOUSLY_REGISTERED":
+        return "This authenticator already has a passkey for this account.";
+      case "ERROR_INVALID_DOMAIN":
+      case "ERROR_INVALID_RP_ID":
+        return "This page's origin doesn't match the server's relying party ID.";
+    }
+  }
+
+  if (error instanceof Error) {
+    if (error.name === "NotAllowedError") {
+      return "The passkey prompt was cancelled or timed out.";
+    }
+    return error.message;
+  }
+
+  return fallback;
 }
 
 export default function App() {
   const [email, setEmail] = useState("demo@example.com");
-  const [message, setMessage] = useState("");
+  const [status, setStatus] = useState<Status | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [signedInAs, setSignedInAs] = useState<string | null>(null);
 
-  async function register() {
+  const supported = browserSupportsWebAuthn();
+  const trimmedEmail = email.trim();
+
+  async function run(action: () => Promise<void>, fallback: string) {
+    if (!trimmedEmail) {
+      setStatus({ kind: "error", text: "Please enter an email." });
+      return;
+    }
+
+    setBusy(true);
     try {
-      setMessage("Starting passkey registration...");
+      await action();
+    } catch (error) {
+      setStatus({ kind: "error", text: describeError(error, fallback) });
+    } finally {
+      setBusy(false);
+    }
+  }
 
-      const options = await jsonRequest("/register/begin", { email });
+  function register() {
+    return run(async () => {
+      setStatus({ kind: "info", text: "Starting passkey registration..." });
+
+      const { publicKey } = await jsonRequest<CredentialCreation>(
+        "/register/begin",
+        { email: trimmedEmail },
+      );
 
       const registrationResponse = await startRegistration({
-        optionsJSON: options,
+        optionsJSON: publicKey,
       });
 
       await jsonRequest("/register/finish", registrationResponse);
 
-      setMessage("Passkey registered successfully.");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Registration failed.");
-    }
+      setStatus({
+        kind: "success",
+        text: "Passkey registered. You can now sign in with it.",
+      });
+    }, "Registration failed.");
   }
 
-  async function login() {
-    try {
-      setMessage("Starting passkey login...");
+  function login() {
+    return run(async () => {
+      setStatus({ kind: "info", text: "Starting passkey login..." });
 
-      const options = await jsonRequest("/login/begin", { email });
+      const { publicKey } = await jsonRequest<CredentialAssertion>(
+        "/login/begin",
+        { email: trimmedEmail },
+      );
 
       const authenticationResponse = await startAuthentication({
-        optionsJSON: options,
+        optionsJSON: publicKey,
       });
 
       await jsonRequest("/login/finish", authenticationResponse);
 
-      setMessage("Login successful 🎉");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Login failed.");
-    }
+      setSignedInAs(trimmedEmail);
+      setStatus(null);
+    }, "Login failed.");
+  }
+
+  function logout() {
+    // The demo server doesn't issue an app session, so this is client-side only.
+    setSignedInAs(null);
+    setStatus(null);
+  }
+
+  if (signedInAs) {
+    return (
+      <main className="container">
+        <section className="card">
+          <h1>Welcome 🎉</h1>
+          <p className="description">
+            You signed in with a passkey as <strong>{signedInAs}</strong>.
+          </p>
+          <div className="buttons">
+            <button className="secondary" onClick={logout}>
+              Sign out
+            </button>
+          </div>
+        </section>
+      </main>
+    );
   }
 
   return (
@@ -73,27 +156,42 @@ export default function App() {
           A tiny Go + React WebAuthn example.
         </p>
 
-        <label htmlFor="email">Email</label>
+        {!supported && (
+          <p className="message error">
+            This browser doesn't support passkeys (WebAuthn).
+          </p>
+        )}
 
-        <input
-          id="email"
-          type="email"
-          value={email}
-          onChange={(event) => setEmail(event.target.value)}
-          autoComplete="username webauthn"
-        />
+        <form onSubmit={(event) => event.preventDefault()}>
+          <label htmlFor="email">Email</label>
 
-        <div className="buttons">
-          <button onClick={register}>
-            Create Passkey
-          </button>
+          <input
+            id="email"
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            autoComplete="username webauthn"
+            disabled={busy}
+            required
+          />
 
-          <button className="secondary" onClick={login}>
-            Sign in with Passkey
-          </button>
-        </div>
+          <div className="buttons">
+            <button type="button" onClick={register} disabled={busy || !supported}>
+              Create Passkey
+            </button>
 
-        {message && <p className="message">{message}</p>}
+            <button
+              type="button"
+              className="secondary"
+              onClick={login}
+              disabled={busy || !supported}
+            >
+              Sign in with Passkey
+            </button>
+          </div>
+        </form>
+
+        {status && <p className={`message ${status.kind}`}>{status.text}</p>}
       </section>
     </main>
   );

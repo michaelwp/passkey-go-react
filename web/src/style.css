@@ -77,3 +77,18 @@ button.secondary {
   border-radius: 10px;
   background: #eef4ff;
 }
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.message.success {
+  background: #ecfdf3;
+  color: #166534;
+}
+
+.message.error {
+  background: #fef2f2;
+  color: #991b1b;
+}
